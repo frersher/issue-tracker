@@ -1,116 +1,137 @@
 const express = require('express');
 const router = express.Router();
-const path = require('path');
-const Database = require('better-sqlite3');
 
-const dbPath = path.join(__dirname, '..', 'db', 'issues.db');
-const db = new Database(dbPath);
-db.pragma('journal_mode = WAL');
+function parseTags(issue) {
+  try { issue.tags = JSON.parse(issue.tags); } catch { issue.tags = []; }
+  return issue;
+}
 
-// GET /api/issues - 列表（支持搜索、标签过滤、严重程度过滤、分页）
-router.get('/', (req, res) => {
+// GET /api/issues - 列表
+router.get('/', async (req, res) => {
   const { search, tag, severity, status, page = 1, limit = 10 } = req.query;
   const offset = (page - 1) * limit;
+  const db = req.db;
 
   let where = [];
   let params = [];
+  let idx = 1;
 
   if (search) {
-    where.push('(title LIKE ? OR description LIKE ? OR root_cause LIKE ? OR solution LIKE ?)');
-    const term = `%${search}%`;
-    params.push(term, term, term, term);
+    where.push(`(title LIKE $${idx} OR description LIKE $${idx} OR root_cause LIKE $${idx} OR solution LIKE $${idx})`);
+    params.push(`%${search}%`);
+    idx++;
   }
   if (tag) {
-    where.push('tags LIKE ?');
+    where.push(`tags LIKE $${idx}`);
     params.push(`%"${tag}"%`);
+    idx++;
   }
   if (severity) {
-    where.push('severity = ?');
+    where.push(`severity = $${idx}`);
     params.push(severity);
+    idx++;
   }
   if (status) {
-    where.push('status = ?');
+    where.push(`status = $${idx}`);
     params.push(status);
+    idx++;
   }
 
   const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
 
-  const totalResult = db.prepare(`SELECT COUNT(*) as count FROM issues ${whereClause}`).get(...params);
-  const total = totalResult.count;
+  try {
+    const totalResult = await db.query(
+      `SELECT COUNT(*) as count FROM issues ${whereClause}`,
+      params
+    );
+    const total = parseInt(totalResult.rows[0].count);
 
-  const issues = db.prepare(
-    `SELECT * FROM issues ${whereClause} ORDER BY created_at DESC LIMIT ? OFFSET ?`
-  ).all(...params, limit, offset);
+    const issuesResult = await db.query(
+      `SELECT * FROM issues ${whereClause} ORDER BY created_at DESC LIMIT $${idx} OFFSET $${idx + 1}`,
+      [...params, limit, offset]
+    );
 
-  issues.forEach(issue => {
-    try { issue.tags = JSON.parse(issue.tags); } catch { issue.tags = []; }
-  });
-
-  res.json({ data: issues, total, page: +page, limit: +limit });
+    const issues = issuesResult.rows.map(parseTags);
+    res.json({ data: issues, total, page: +page, limit: +limit });
+  } catch (err) {
+    res.status(500).json({ error: '查询失败' });
+  }
 });
 
 // GET /api/issues/:id - 详情
-router.get('/:id', (req, res) => {
-  const issue = db.prepare('SELECT * FROM issues WHERE id = ?').get(req.params.id);
-  if (!issue) return res.status(404).json({ error: '问题不存在' });
-  try { issue.tags = JSON.parse(issue.tags); } catch { issue.tags = []; }
-  res.json(issue);
+router.get('/:id', async (req, res) => {
+  try {
+    const result = await req.db.query('SELECT * FROM issues WHERE id = $1', [req.params.id]);
+    if (result.rows.length === 0) return res.status(404).json({ error: '问题不存在' });
+    res.json(parseTags(result.rows[0]));
+  } catch (err) {
+    res.status(500).json({ error: '查询失败' });
+  }
 });
 
 // POST /api/issues - 新建
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
   const { title, description, impact_scope, root_cause, solution, review, tags, severity, status } = req.body;
   if (!title) return res.status(400).json({ error: '标题不能为空' });
 
-  const tagsJson = JSON.stringify(tags || []);
-  const result = db.prepare(`
-    INSERT INTO issues (title, description, impact_scope, root_cause, solution, review, tags, severity, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(title, description || '', impact_scope || '', root_cause || '', solution || '', review || '', tagsJson, severity || 'P2', status || 'open');
+  try {
+    const result = await req.db.query(`
+      INSERT INTO issues (title, description, impact_scope, root_cause, solution, review, tags, severity, status)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      RETURNING *
+    `, [title, description || '', impact_scope || '', root_cause || '', solution || '', review || '', JSON.stringify(tags || []), severity || 'P2', status || 'open']);
 
-  const issue = db.prepare('SELECT * FROM issues WHERE id = ?').get(result.lastInsertRowid);
-  try { issue.tags = JSON.parse(issue.tags); } catch { issue.tags = []; }
-  res.status(201).json(issue);
+    res.status(201).json(parseTags(result.rows[0]));
+  } catch (err) {
+    res.status(500).json({ error: '创建失败' });
+  }
 });
 
 // PUT /api/issues/:id - 更新
-router.put('/:id', (req, res) => {
-  const existing = db.prepare('SELECT * FROM issues WHERE id = ?').get(req.params.id);
-  if (!existing) return res.status(404).json({ error: '问题不存在' });
+router.put('/:id', async (req, res) => {
+  try {
+    const existing = await req.db.query('SELECT * FROM issues WHERE id = $1', [req.params.id]);
+    if (existing.rows.length === 0) return res.status(404).json({ error: '问题不存在' });
 
-  const { title, description, impact_scope, root_cause, solution, review, tags, severity, status } = req.body;
-  const tagsJson = JSON.stringify(tags || []);
+    const e = existing.rows[0];
+    const { title, description, impact_scope, root_cause, solution, review, tags, severity, status } = req.body;
 
-  db.prepare(`
-    UPDATE issues SET
-      title = ?, description = ?, impact_scope = ?, root_cause = ?,
-      solution = ?, review = ?, tags = ?, severity = ?, status = ?,
-      updated_at = CURRENT_TIMESTAMP
-    WHERE id = ?
-  `).run(
-    title || existing.title,
-    description !== undefined ? description : existing.description,
-    impact_scope !== undefined ? impact_scope : existing.impact_scope,
-    root_cause !== undefined ? root_cause : existing.root_cause,
-    solution !== undefined ? solution : existing.solution,
-    review !== undefined ? review : existing.review,
-    tagsJson,
-    severity || existing.severity,
-    status || existing.status,
-    req.params.id
-  );
+    const result = await req.db.query(`
+      UPDATE issues SET
+        title = $1, description = $2, impact_scope = $3, root_cause = $4,
+        solution = $5, review = $6, tags = $7, severity = $8, status = $9,
+        updated_at = NOW()
+      WHERE id = $10
+      RETURNING *
+    `, [
+      title || e.title,
+      description !== undefined ? description : e.description,
+      impact_scope !== undefined ? impact_scope : e.impact_scope,
+      root_cause !== undefined ? root_cause : e.root_cause,
+      solution !== undefined ? solution : e.solution,
+      review !== undefined ? review : e.review,
+      JSON.stringify(tags || []),
+      severity || e.severity,
+      status || e.status,
+      req.params.id,
+    ]);
 
-  const issue = db.prepare('SELECT * FROM issues WHERE id = ?').get(req.params.id);
-  try { issue.tags = JSON.parse(issue.tags); } catch { issue.tags = []; }
-  res.json(issue);
+    res.json(parseTags(result.rows[0]));
+  } catch (err) {
+    res.status(500).json({ error: '更新失败' });
+  }
 });
 
 // DELETE /api/issues/:id - 删除
-router.delete('/:id', (req, res) => {
-  const existing = db.prepare('SELECT * FROM issues WHERE id = ?').get(req.params.id);
-  if (!existing) return res.status(404).json({ error: '问题不存在' });
-  db.prepare('DELETE FROM issues WHERE id = ?').run(req.params.id);
-  res.json({ message: '删除成功' });
+router.delete('/:id', async (req, res) => {
+  try {
+    const existing = await req.db.query('SELECT * FROM issues WHERE id = $1', [req.params.id]);
+    if (existing.rows.length === 0) return res.status(404).json({ error: '问题不存在' });
+    await req.db.query('DELETE FROM issues WHERE id = $1', [req.params.id]);
+    res.json({ message: '删除成功' });
+  } catch (err) {
+    res.status(500).json({ error: '删除失败' });
+  }
 });
 
 module.exports = router;

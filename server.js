@@ -1,18 +1,33 @@
-const express = require('express');
+const fs = require('fs');
 const path = require('path');
-const Database = require('better-sqlite3');
+const envPath = path.join(__dirname, '.env');
+if (fs.existsSync(envPath)) {
+  const lines = fs.readFileSync(envPath, 'utf8').split('\n');
+  lines.forEach(line => {
+    const match = line.match(/^([^#=]+)=(.*)$/);
+    if (match && !process.env[match[1].trim()]) {
+      process.env[match[1].trim()] = match[2].trim();
+    }
+  });
+}
+
+const express = require('express');
+const { Pool } = require('pg');
 const issuesRouter = require('./routes/issues');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// 初始化数据库
-const dbPath = path.join(__dirname, 'db', 'issues.db');
-const db = new Database(dbPath);
-db.pragma('journal_mode = WAL');
-db.exec(`
+// PostgreSQL 连接池
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false,
+});
+
+// 初始化数据库表
+pool.query(`
   CREATE TABLE IF NOT EXISTS issues (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     title TEXT NOT NULL,
     description TEXT,
     impact_scope TEXT,
@@ -22,34 +37,54 @@ db.exec(`
     tags TEXT DEFAULT '[]',
     severity TEXT DEFAULT 'P2',
     status TEXT DEFAULT 'open',
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
   );
-  CREATE INDEX IF NOT EXISTS idx_issues_status ON issues(status);
-  CREATE INDEX IF NOT EXISTS idx_issues_severity ON issues(severity);
-  CREATE INDEX IF NOT EXISTS idx_issues_created_at ON issues(created_at);
-`);
-db.close();
+`).then(() => {
+  return pool.query(`CREATE INDEX IF NOT EXISTS idx_issues_status ON issues(status)`);
+}).then(() => {
+  return pool.query(`CREATE INDEX IF NOT EXISTS idx_issues_severity ON issues(severity)`);
+}).then(() => {
+  return pool.query(`CREATE INDEX IF NOT EXISTS idx_issues_created_at ON issues(created_at)`);
+}).then(() => {
+  console.log('数据库表已就绪');
+}).catch(err => {
+  console.error('数据库初始化失败:', err.message);
+});
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// API 路由
-app.use('/api/issues', issuesRouter);
+// 将 pool 注入到路由
+app.use('/api/issues', (req, res, next) => {
+  req.db = pool;
+  next();
+}, issuesRouter);
 
 // 统计接口
-app.get('/api/stats', (req, res) => {
-  const statsDb = new Database(dbPath);
-  const bySeverity = statsDb.prepare('SELECT severity, COUNT(*) as count FROM issues GROUP BY severity').all();
-  const byStatus = statsDb.prepare('SELECT status, COUNT(*) as count FROM issues GROUP BY status').all();
-  const total = statsDb.prepare('SELECT COUNT(*) as count FROM issues').get().count;
-  const recent = statsDb.prepare('SELECT * FROM issues ORDER BY created_at DESC LIMIT 5').all();
-  recent.forEach(issue => {
-    try { issue.tags = JSON.parse(issue.tags); } catch { issue.tags = []; }
-  });
-  statsDb.close();
+app.get('/api/stats', async (req, res) => {
+  try {
+    const [sevRes, staRes, totRes, recRes] = await Promise.all([
+      pool.query('SELECT severity, COUNT(*) as count FROM issues GROUP BY severity'),
+      pool.query('SELECT status, COUNT(*) as count FROM issues GROUP BY status'),
+      pool.query('SELECT COUNT(*) as count FROM issues'),
+      pool.query('SELECT * FROM issues ORDER BY created_at DESC LIMIT 5'),
+    ]);
 
-  res.json({ total, bySeverity, byStatus, recent });
+    const recent = recRes.rows.map(issue => {
+      try { issue.tags = JSON.parse(issue.tags); } catch { issue.tags = []; }
+      return issue;
+    });
+
+    res.json({
+      total: parseInt(totRes.rows[0].count),
+      bySeverity: sevRes.rows,
+      byStatus: staRes.rows,
+      recent,
+    });
+  } catch (err) {
+    res.status(500).json({ error: '数据库查询失败' });
+  }
 });
 
 // SPA fallback
