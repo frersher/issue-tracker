@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>生产问题沉淀系统</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <nav class="sidebar">
+    <div class="sidebar-header">
+      <h1>📋 问题沉淀</h1>
+    </div>
+    <ul class="nav-menu">
+      <li><a href="#dashboard" class="nav-link active" data-page="dashboard">📊 仪表盘</a></li>
+      <li><a href="#issues" class="nav-link" data-page="issues">📝 问题列表</a></li>
+      <li><a href="#new" class="nav-link" data-page="new">➕ 新建问题</a></li>
+    </ul>
+    <div class="sidebar-footer">
+      <span>支付生产问题管理</span>
+    </div>
+  </nav>
+
+  <main class="main-content">
+    <!-- 仪表盘 -->
+    <section id="page-dashboard" class="page active">
+      <div class="page-header">
+        <h2>仪表盘</h2>
+      </div>
+      <div class="stats-cards" id="stats-cards"></div>
+      <div class="dashboard-grid">
+        <div class="card">
+          <h3>严重程度分布</h3>
+          <div id="severity-chart" class="chart-bars"></div>
+        </div>
+        <div class="card">
+          <h3>状态分布</h3>
+          <div id="status-chart" class="chart-bars"></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>最近问题</h3>
+        <div id="recent-issues"></div>
+      </div>
+    </section>
+
+    <!-- 问题列表 -->
+    <section id="page-issues" class="page">
+      <div class="page-header">
+        <h2>问题列表</h2>
+      </div>
+      <div class="toolbar">
+        <input type="text" id="search-input" placeholder="搜索标题、描述、根因..." class="search-input">
+        <select id="filter-severity" class="filter-select">
+          <option value="">全部严重程度</option>
+          <option value="P0">P0 紧急</option>
+          <option value="P1">P1 高</option>
+          <option value="P2">P2 中</option>
+          <option value="P3">P3 低</option>
+        </select>
+        <select id="filter-status" class="filter-select">
+          <option value="">全部状态</option>
+          <option value="open">待处理</option>
+          <option value="analyzing">分析中</option>
+          <option value="resolved">已解决</option>
+          <option value="closed">已关闭</option>
+        </select>
+      </div>
+      <div id="issues-list" class="issues-list"></div>
+      <div id="pagination" class="pagination"></div>
+    </section>
+
+    <!-- 新建/编辑问题 -->
+    <section id="page-form" class="page">
+      <div class="page-header">
+        <h2 id="form-title">新建问题</h2>
+      </div>
+      <form id="issue-form" class="issue-form">
+        <input type="hidden" id="form-id">
+        <div class="form-group">
+          <label>问题标题 <span class="required">*</span></label>
+          <input type="text" id="f-title" required placeholder="简明描述问题">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>严重程度</label>
+            <select id="f-severity">
+              <option value="P0">P0 紧急</option>
+              <option value="P1">P1 高</option>
+              <option value="P2" selected>P2 中</option>
+              <option value="P3">P3 低</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>状态</label>
+            <select id="f-status">
+              <option value="open">待处理</option>
+              <option value="analyzing">分析中</option>
+              <option value="resolved">已解决</option>
+              <option value="closed">已关闭</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>标签</label>
+          <div id="tags-container" class="tags-container">
+            <span class="tag-option" data-tag="支付">支付</span>
+            <span class="tag-option" data-tag="超时">超时</span>
+            <span class="tag-option" data-tag="网络">网络</span>
+            <span class="tag-option" data-tag="数据库">数据库</span>
+            <span class="tag-option" data-tag="缓存">缓存</span>
+            <span class="tag-option" data-tag="MQ">MQ</span>
+            <span class="tag-option" data-tag="配置">配置</span>
+            <span class="tag-option" data-tag="安全">安全</span>
+            <span class="tag-option" data-tag="退款">退款</span>
+            <span class="tag-option" data-tag="对账">对账</span>
+            <span class="tag-option" data-tag="宕机">宕机</span>
+            <span class="tag-option" data-tag="性能">性能</span>
+            <input type="text" id="f-custom-tag" placeholder="+ 自定义标签" class="custom-tag-input">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>问题描述</label>
+          <textarea id="f-description" rows="3" placeholder="详细描述问题现象..."></textarea>
+        </div>
+        <div class="form-group">
+          <label>影响范围</label>
+          <textarea id="f-impact-scope" rows="2" placeholder="受影响的业务、用户量、交易量等..."></textarea>
+        </div>
+        <div class="form-group">
+          <label>根因分析</label>
+          <textarea id="f-root-cause" rows="3" placeholder="问题的根本原因..."></textarea>
+        </div>
+        <div class="form-group">
+          <label>解决方案</label>
+          <textarea id="f-solution" rows="3" placeholder="采取的解决措施..."></textarea>
+        </div>
+        <div class="form-group">
+          <label>复盘总结</label>
+          <textarea id="f-review" rows="3" placeholder="经验教训、改进建议..."></textarea>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary" id="form-submit-btn">创建问题</button>
+          <button type="button" class="btn btn-secondary" id="form-cancel-btn">取消</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- 问题详情 -->
+    <section id="page-detail" class="page">
+      <div class="page-header">
+        <div class="detail-header-left">
+          <button class="btn btn-back" id="back-btn">← 返回列表</button>
+          <h2 id="detail-title"></h2>
+        </div>
+        <div class="detail-header-right">
+          <button class="btn btn-primary" id="edit-btn">编辑</button>
+          <button class="btn btn-danger" id="delete-btn">删除</button>
+        </div>
+      </div>
+      <div class="detail-meta" id="detail-meta"></div>
+      <div class="detail-body" id="detail-body"></div>
+    </section>
+  </main>
+
+  <!-- 删除确认弹窗 -->
+  <div id="confirm-modal" class="modal hidden">
+    <div class="modal-content">
+      <h3>确认删除</h3>
+      <p>确定要删除这个问题吗？此操作不可撤销。</p>
+      <div class="modal-actions">
+        <button class="btn btn-danger" id="confirm-delete-btn">确认删除</button>
+        <button class="btn btn-secondary" id="cancel-delete-btn">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast 通知 -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/js/app.js"></script>
+</body>
+</html>
