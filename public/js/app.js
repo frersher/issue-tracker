@@ -5,6 +5,8 @@
   let currentPage = 1;
   let selectedTags = [];
   let currentDetailId = null;
+  let pendingScreenshots = [];
+  let existingScreenshots = [];
 
   // --- Navigation ---
   function navigate(hash) {
@@ -45,6 +47,20 @@
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.error || '请求失败');
+    }
+    return res.json();
+  }
+
+  async function uploadScreenshots(issueId, files) {
+    const formData = new FormData();
+    files.forEach(f => formData.append('screenshots', f));
+    const res = await fetch(`${API}/${issueId}/screenshots`, {
+      method: 'POST',
+      body: formData,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || '上传失败');
     }
     return res.json();
   }
@@ -178,6 +194,8 @@
       <span class="issue-severity ${issue.severity}">${issue.severity}</span>
       <span class="issue-status ${issue.status}">${statusMap[issue.status]}</span>
       ${tags}
+      ${issue.business_module ? `<span class="detail-tag" style="background:#fef3c7;color:#92400e;">业务: ${esc(issue.business_module)}</span>` : ''}
+      ${issue.function_module ? `<span class="detail-tag" style="background:#e0e7ff;color:#3730a3;">功能: ${esc(issue.function_module)}</span>` : ''}
       <span class="issue-date">创建: ${formatDate(issue.created_at)}</span>
       <span class="issue-date">更新: ${formatDate(issue.updated_at)}</span>
     `;
@@ -197,6 +215,29 @@
       </div>
     `).join('');
 
+    // Screenshots gallery
+    const gallery = document.getElementById('detail-gallery');
+    if (issue.screenshots && issue.screenshots.length > 0) {
+      gallery.innerHTML = `
+        <div class="detail-section">
+          <h4>截图 (${issue.screenshots.length})</h4>
+          <div class="screenshot-gallery">
+            ${issue.screenshots.map(s => `
+              <div class="screenshot-thumb">
+                <img src="/api/screenshots/${s.id}" alt="${esc(s.filename)}" loading="lazy">
+                <span class="screenshot-label">${esc(s.filename)}</span>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `;
+      gallery.querySelectorAll('.screenshot-thumb img').forEach(img => {
+        img.addEventListener('click', () => openLightbox(img.src));
+      });
+    } else {
+      gallery.innerHTML = '';
+    }
+
     showPage('detail');
   }
 
@@ -211,12 +252,56 @@
     document.getElementById('f-review').value = issue ? issue.review : '';
     document.getElementById('f-severity').value = issue ? issue.severity : 'P2';
     document.getElementById('f-status').value = issue ? issue.status : 'open';
+    document.getElementById('f-business-module').value = issue ? (issue.business_module || '') : '';
+    document.getElementById('f-function-module').value = issue ? (issue.function_module || '') : '';
     document.getElementById('form-title').textContent = issue ? '编辑问题' : '新建问题';
     document.getElementById('form-submit-btn').textContent = issue ? '保存修改' : '创建问题';
 
     selectedTags = issue ? [...(issue.tags || [])] : [];
     updateTagUI();
+
+    // Reset screenshots
+    pendingScreenshots = [];
+    existingScreenshots = [];
+    document.getElementById('preview-grid').innerHTML = '';
+
+    if (issue && issue.screenshots) {
+      existingScreenshots = issue.screenshots;
+      renderExistingScreenshots();
+    } else {
+      document.getElementById('existing-screenshots').innerHTML = '';
+    }
+
     showPage('form');
+  }
+
+  function renderExistingScreenshots() {
+    const container = document.getElementById('existing-screenshots');
+    if (existingScreenshots.length === 0) {
+      container.innerHTML = '';
+      return;
+    }
+    container.innerHTML = existingScreenshots.map(s => `
+      <div class="preview-item" data-screenshot-id="${s.id}">
+        <img src="/api/screenshots/${s.id}" alt="${esc(s.filename)}">
+        <button type="button" class="preview-remove" data-id="${s.id}">&times;</button>
+      </div>
+    `).join('');
+
+    container.querySelectorAll('.preview-remove').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const screenshotId = btn.dataset.id;
+        const issueId = document.getElementById('form-id').value;
+        try {
+          await fetch(`${API}/${issueId}/screenshots/${screenshotId}`, { method: 'DELETE' });
+          existingScreenshots = existingScreenshots.filter(s => s.id !== +screenshotId);
+          renderExistingScreenshots();
+          showToast('截图已删除');
+        } catch (err) {
+          showToast(err.message);
+        }
+      });
+    });
   }
 
   function updateTagUI() {
@@ -243,7 +328,6 @@
       const val = e.target.value.trim();
       if (val && !selectedTags.includes(val)) {
         selectedTags.push(val);
-        // Add as new tag option
         const span = document.createElement('span');
         span.className = 'tag-option selected';
         span.dataset.tag = val;
@@ -251,8 +335,6 @@
         span.addEventListener('click', () => {
           selectedTags = selectedTags.filter(t => t !== val);
           updateTagUI();
-          if (!document.querySelector(`.tag-option[data-tag="${val}"]`)) return;
-          // keep it but deselect
         });
         e.target.before(span);
         updateTagUI();
@@ -260,6 +342,75 @@
       }
     }
   });
+
+  // --- Screenshot upload ---
+  const fileInput = document.getElementById('f-screenshots');
+  const uploadArea = document.getElementById('upload-area');
+  const uploadPrompt = document.getElementById('upload-prompt');
+
+  uploadPrompt.addEventListener('click', () => fileInput.click());
+
+  uploadArea.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    uploadArea.classList.add('dragover');
+  });
+  uploadArea.addEventListener('dragleave', () => {
+    uploadArea.classList.remove('dragover');
+  });
+  uploadArea.addEventListener('drop', (e) => {
+    e.preventDefault();
+    uploadArea.classList.remove('dragover');
+    handleFiles(e.dataTransfer.files);
+  });
+
+  fileInput.addEventListener('change', () => {
+    handleFiles(fileInput.files);
+    fileInput.value = '';
+  });
+
+  function handleFiles(fileList) {
+    const allowed = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+    const maxSize = 5 * 1024 * 1024;
+
+    Array.from(fileList).forEach(file => {
+      if (!allowed.includes(file.type)) {
+        showToast('不支持的文件格式: ' + file.name);
+        return;
+      }
+      if (file.size > maxSize) {
+        showToast('文件超过 5MB: ' + file.name);
+        return;
+      }
+      pendingScreenshots.push(file);
+      addPreview(file, pendingScreenshots.length - 1);
+    });
+  }
+
+  function addPreview(file, index) {
+    const grid = document.getElementById('preview-grid');
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const div = document.createElement('div');
+      div.className = 'preview-item';
+      div.innerHTML = `
+        <img src="${e.target.result}" alt="${esc(file.name)}">
+        <button type="button" class="preview-remove" data-index="${index}">&times;</button>
+      `;
+      grid.appendChild(div);
+
+      div.querySelector('.preview-remove').addEventListener('click', () => {
+        pendingScreenshots.splice(index, 1);
+        rebuildPreviews();
+      });
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function rebuildPreviews() {
+    const grid = document.getElementById('preview-grid');
+    grid.innerHTML = '';
+    pendingScreenshots.forEach((file, i) => addPreview(file, i));
+  }
 
   document.getElementById('issue-form').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -271,19 +422,27 @@
       root_cause: document.getElementById('f-root-cause').value,
       solution: document.getElementById('f-solution').value,
       review: document.getElementById('f-review').value,
+      business_module: document.getElementById('f-business-module').value,
+      function_module: document.getElementById('f-function-module').value,
       severity: document.getElementById('f-severity').value,
       status: document.getElementById('f-status').value,
       tags: selectedTags,
     };
 
     try {
+      let savedIssue;
       if (id) {
-        await api(`${API}/${id}`, { method: 'PUT', body });
-        showToast('问题已更新');
+        savedIssue = await api(`${API}/${id}`, { method: 'PUT', body });
       } else {
-        await api(API, { method: 'POST', body });
-        showToast('问题已创建');
+        savedIssue = await api(API, { method: 'POST', body });
       }
+
+      if (pendingScreenshots.length > 0) {
+        await uploadScreenshots(savedIssue.id, pendingScreenshots);
+        pendingScreenshots = [];
+      }
+
+      showToast(id ? '问题已更新' : '问题已创建');
       location.hash = '#issues';
     } catch (err) {
       showToast(err.message);
@@ -303,7 +462,7 @@
     if (!currentDetailId) return;
     const issue = await api(`${API}/${currentDetailId}`);
     resetForm(issue);
-    location.hash = '#new'; // reuse form page
+    location.hash = '#new';
   });
 
   document.getElementById('delete-btn').addEventListener('click', () => {
@@ -334,6 +493,24 @@
   });
   document.getElementById('filter-severity').addEventListener('change', () => loadIssues(1));
   document.getElementById('filter-status').addEventListener('change', () => loadIssues(1));
+
+  // --- Lightbox ---
+  function openLightbox(src) {
+    document.getElementById('lightbox-img').src = src;
+    document.getElementById('lightbox').classList.remove('hidden');
+  }
+
+  document.querySelector('.lightbox-close').addEventListener('click', () => {
+    document.getElementById('lightbox').classList.add('hidden');
+  });
+  document.querySelector('.lightbox-overlay').addEventListener('click', () => {
+    document.getElementById('lightbox').classList.add('hidden');
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      document.getElementById('lightbox').classList.add('hidden');
+    }
+  });
 
   // --- Helpers ---
   function showPage(name) {

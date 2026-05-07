@@ -34,6 +34,8 @@ pool.query(`
     root_cause TEXT,
     solution TEXT,
     review TEXT,
+    business_module TEXT DEFAULT '',
+    function_module TEXT DEFAULT '',
     tags TEXT DEFAULT '[]',
     severity TEXT DEFAULT 'P2',
     status TEXT DEFAULT 'open',
@@ -46,6 +48,19 @@ pool.query(`
   return pool.query(`CREATE INDEX IF NOT EXISTS idx_issues_severity ON issues(severity)`);
 }).then(() => {
   return pool.query(`CREATE INDEX IF NOT EXISTS idx_issues_created_at ON issues(created_at)`);
+}).then(() => {
+  return pool.query(`
+    CREATE TABLE IF NOT EXISTS issue_screenshots (
+      id SERIAL PRIMARY KEY,
+      issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+      filename TEXT NOT NULL,
+      mimetype TEXT NOT NULL,
+      filesize INTEGER NOT NULL,
+      data BYTEA NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_screenshots_issue_id ON issue_screenshots(issue_id);
+  `);
 }).then(() => {
   console.log('数据库表已就绪');
 }).catch(err => {
@@ -84,6 +99,23 @@ app.get('/api/stats', async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: '数据库查询失败' });
+  }
+});
+
+// 截图访问
+app.get('/api/screenshots/:id', async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT filename, mimetype, data FROM issue_screenshots WHERE id = $1',
+      [req.params.id]
+    );
+    if (result.rows.length === 0) return res.status(404).send('Not found');
+    const { mimetype, data } = result.rows[0];
+    res.setHeader('Content-Type', mimetype);
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.send(data);
+  } catch (err) {
+    res.status(500).send('Error');
   }
 });
 
