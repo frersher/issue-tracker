@@ -443,6 +443,7 @@
       }
 
       showToast(id ? '问题已更新' : '问题已创建');
+      navigate('#issues');
       location.hash = '#issues';
     } catch (err) {
       showToast(err.message);
@@ -462,7 +463,6 @@
     if (!currentDetailId) return;
     const issue = await api(`${API}/${currentDetailId}`);
     resetForm(issue);
-    location.hash = '#new';
   });
 
   document.getElementById('delete-btn').addEventListener('click', () => {
@@ -526,7 +526,8 @@
 
   function formatDate(d) {
     if (!d) return '';
-    const date = new Date(d + 'Z');
+    const date = new Date(d);
+    if (isNaN(date.getTime())) return '';
     return date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
   }
 
